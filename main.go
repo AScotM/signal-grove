@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	version                  = "1.2.0"
+	version                  = "1.2.2"
 	maxRequestBody           = 64 * 1024
 	defaultAddr              = ":8080"
 	defaultHistory           = 10000
@@ -327,7 +328,6 @@ func (g *Grove) Add(in IncomingEvent) (Event, error) {
 	)
 
 	learned := !anomaly
-
 	id := g.nextID.Add(1)
 
 	event := Event{
@@ -404,7 +404,6 @@ func (g *Grove) Add(in IncomingEvent) (Event, error) {
 
 	node.Signals[in.Signal] = state
 	g.recalculateNodeAnomalies(node)
-
 	g.totalReceived.Add(1)
 
 	return event, nil
@@ -429,7 +428,6 @@ func (g *Grove) Events(limit int) []Event {
 	}
 
 	start := len(g.events) - limit
-
 	result := make([]Event, limit)
 	copy(result, g.events[start:])
 
@@ -629,7 +627,6 @@ func (g *Grove) Prune() int {
 
 		for signalName := range node.Signals {
 			key := signalKey(nodeName, signalName)
-
 			currentState, exists := g.states[key]
 
 			if !exists {
@@ -1023,8 +1020,16 @@ func (s *Server) handleSignals(
 	)
 }
 
-func clearScreen() {
+func initializeScreen() {
 	fmt.Print("\033[2J\033[H")
+}
+
+func resetCursor() {
+	fmt.Print("\033[H")
+}
+
+func clearToEndOfScreen() {
+	fmt.Print("\033[J")
 }
 
 func formatAge(timestamp time.Time) string {
@@ -1043,30 +1048,18 @@ func formatAge(timestamp time.Time) string {
 	}
 
 	if duration < time.Minute {
-		return fmt.Sprintf(
-			"%ds",
-			int(duration.Seconds()),
-		)
+		return fmt.Sprintf("%ds", int(duration.Seconds()))
 	}
 
 	if duration < time.Hour {
-		return fmt.Sprintf(
-			"%dm",
-			int(duration.Minutes()),
-		)
+		return fmt.Sprintf("%dm", int(duration.Minutes()))
 	}
 
 	if duration < 24*time.Hour {
-		return fmt.Sprintf(
-			"%dh",
-			int(duration.Hours()),
-		)
+		return fmt.Sprintf("%dh", int(duration.Hours()))
 	}
 
-	return fmt.Sprintf(
-		"%dd",
-		int(duration.Hours()/24),
-	)
+	return fmt.Sprintf("%dd", int(duration.Hours()/24))
 }
 
 func formatUptime(seconds int64) string {
@@ -1114,10 +1107,7 @@ func formatUptime(seconds int64) string {
 		)
 	}
 
-	return fmt.Sprintf(
-		"%ds",
-		secs,
-	)
+	return fmt.Sprintf("%ds", secs)
 }
 
 func stateLabel(anomaly bool) string {
@@ -1159,10 +1149,7 @@ func formatZScore(value *float64) string {
 		return "-"
 	}
 
-	return fmt.Sprintf(
-		"%.2f",
-		*value,
-	)
+	return fmt.Sprintf("%.2f", *value)
 }
 
 func renderDashboard(
@@ -1171,7 +1158,7 @@ func renderDashboard(
 ) {
 	status := grove.Status()
 	signals := grove.Signals()
-	anomalies := grove.Anomalies(8)
+	anomalies := grove.Anomalies(6)
 
 	sort.Slice(signals, func(i, j int) bool {
 		if signals[i].Anomaly != signals[j].Anomaly {
@@ -1185,86 +1172,100 @@ func renderDashboard(
 		return signals[i].Node < signals[j].Node
 	})
 
-	clearScreen()
+	resetCursor()
 
 	fmt.Println("SIGNAL GROVE")
 	fmt.Println("Real-Time Signal Monitoring and Anomaly Detection Engine")
-	fmt.Println()
+	fmt.Println(strings.Repeat("-", 92))
 
-	fmt.Println("SERVICE")
-	fmt.Printf("Version             %s\n", status.Version)
-	fmt.Printf("Listen address      %s\n", addr)
-	fmt.Printf("Started             %s\n", status.StartedAt.Format(time.RFC3339))
-	fmt.Printf("Current time        %s\n", status.CurrentTime.Format(time.RFC3339))
-	fmt.Printf("Uptime              %s\n", formatUptime(status.UptimeSeconds))
-	fmt.Println()
+	fmt.Printf(
+		"Version %-8s  Listen %-18s  Uptime %-18s\n",
+		status.Version,
+		addr,
+		formatUptime(status.UptimeSeconds),
+	)
 
-	fmt.Println("ACTIVITY")
-	fmt.Printf("Tracked nodes       %d\n", status.Nodes)
-	fmt.Printf("Tracked signals     %d\n", status.Signals)
-	fmt.Printf("Stored events       %d / %d\n", status.Events, status.HistoryLimit)
-	fmt.Printf("Events received     %d\n", status.TotalReceived)
-	fmt.Printf("Anomalies detected  %d\n", status.TotalAnomalies)
-	fmt.Printf("Active anomalies    %d\n", status.ActiveAnomalies)
-	fmt.Printf("Rejected events     %d\n", status.RejectedEvents)
-	fmt.Println()
+	fmt.Printf(
+		"Nodes   %-8d  Signals %-17d  Active anomalies %-8d\n",
+		status.Nodes,
+		status.Signals,
+		status.ActiveAnomalies,
+	)
 
-	fmt.Println("DETECTION")
-	fmt.Printf("Baseline window     %d samples\n", status.BaselineWindow)
-	fmt.Printf("Minimum samples     %d samples\n", status.MinimumSamples)
-	fmt.Printf("Z-score threshold   %.2f sigma\n", status.AnomalyZScore)
-	fmt.Printf("Absolute tolerance  %.6f\n", status.AbsoluteTolerance)
-	fmt.Printf("Relative tolerance  %.4f\n", status.RelativeTolerance)
-	fmt.Printf("Maximum event age   %s\n", status.MaximumEventAge)
-	fmt.Println()
+	fmt.Printf(
+		"Events  %-8d  Received %-16d  Detected anomalies %-6d\n",
+		status.Events,
+		status.TotalReceived,
+		status.TotalAnomalies,
+	)
+
+	fmt.Printf(
+		"Rejected %-7d  History %-17s  Retention %-14s\n",
+		status.RejectedEvents,
+		fmt.Sprintf("%d/%d", status.Events, status.HistoryLimit),
+		status.MaximumEventAge,
+	)
+
+	fmt.Printf(
+		"Window  %-8d  Minimum samples %-9d  Threshold %.2f sigma\n",
+		status.BaselineWindow,
+		status.MinimumSamples,
+		status.AnomalyZScore,
+	)
+
+	fmt.Printf(
+		"Zero-variance tolerance: absolute %.6f, relative %.4f\n",
+		status.AbsoluteTolerance,
+		status.RelativeTolerance,
+	)
+
+	fmt.Println(strings.Repeat("-", 92))
 
 	if len(signals) == 0 {
 		fmt.Println("SIGNAL STATE")
 		fmt.Println("No signals have been received yet.")
 		fmt.Println()
-		fmt.Println("Signal Grove is ready to accept JSON events through POST /events.")
-		fmt.Println("A baseline is learned independently for every node and signal pair.")
-		fmt.Println("Anomaly detection begins after the configured minimum sample count.")
-		fmt.Println("Detected anomalies are retained as events but are not learned into the baseline.")
+		fmt.Println("POST JSON events to /events to begin learning per-node, per-signal baselines.")
+		fmt.Println("Anomaly detection starts after the minimum baseline sample count is reached.")
+		fmt.Println("Detected anomalies are retained but are not learned into the baseline.")
 		fmt.Println()
 		fmt.Println("Press Ctrl-C to stop Signal Grove.")
+		clearToEndOfScreen()
 		return
 	}
 
 	fmt.Println("SIGNAL STATE")
 
 	fmt.Printf(
-		"%-16s %-20s %10s %10s %9s %8s %7s %8s %9s %10s\n",
+		"%-14s %-18s %9s %9s %7s %4s %6s %8s %7s\n",
 		"NODE",
 		"SIGNAL",
-		"CURRENT",
-		"BASELINE",
-		"STDDEV",
-		"Z-SCORE",
-		"SAMPLES",
-		"LEARNED",
+		"VALUE",
+		"MEAN",
+		"Z",
+		"N",
+		"LEARN",
 		"STATE",
-		"UPDATED",
+		"AGE",
 	)
 
-	fmt.Println(strings.Repeat("-", 119))
+	fmt.Println(strings.Repeat("-", 92))
 
 	displayCount := len(signals)
 
-	if displayCount > 18 {
-		displayCount = 18
+	if displayCount > 16 {
+		displayCount = 16
 	}
 
 	for i := 0; i < displayCount; i++ {
 		state := signals[i]
 
 		fmt.Printf(
-			"%-16s %-20s %10.3f %10.3f %9.3f %8s %7d %8s %9s %10s\n",
-			truncate(state.Node, 16),
-			truncate(state.Signal, 20),
+			"%-14s %-18s %9.3f %9.3f %7s %4d %6s %8s %7s\n",
+			truncate(state.Node, 14),
+			truncate(state.Signal, 18),
 			state.Value,
 			state.Mean,
-			state.StdDev,
 			formatZScore(state.ZScore),
 			state.Samples,
 			learnedLabel(state.Learned),
@@ -1275,7 +1276,7 @@ func renderDashboard(
 
 	if len(signals) > displayCount {
 		fmt.Printf(
-			"\n%d additional signals are currently tracked but not displayed.\n",
+			"%d additional signals are tracked but not shown.\n",
 			len(signals)-displayCount,
 		)
 	}
@@ -1284,31 +1285,28 @@ func renderDashboard(
 	fmt.Println("RECENT ANOMALIES")
 
 	if len(anomalies) == 0 {
-		fmt.Println("No anomalies have been detected in the retained event history.")
+		fmt.Println("No anomalies in retained event history.")
 	} else {
 		for _, event := range anomalies {
 			fmt.Printf(
-				"ID=%d node=%s signal=%s value=%.3f baseline=%.3f stddev=%.3f z=%s samples=%d age=%s\n",
+				"#%-5d %-14s %-18s value=%9.3f mean=%9.3f z=%7s age=%s\n",
 				event.ID,
-				event.Node,
-				event.Signal,
+				truncate(event.Node, 14),
+				truncate(event.Signal, 18),
 				event.Value,
 				event.Mean,
-				event.StdDev,
 				formatZScore(event.ZScore),
-				event.Samples,
 				formatAge(event.Timestamp),
 			)
 		}
 	}
 
 	fmt.Println()
-	fmt.Println("BASELINE BEHAVIOR")
-	fmt.Println("Normal observations are added to the rolling baseline.")
-	fmt.Println("Detected anomalies remain visible in event history but do not modify the baseline.")
-	fmt.Println("A Z-score is unavailable when the baseline variance is zero; tolerance rules are used instead.")
-	fmt.Println()
+	fmt.Println("Normal observations update the rolling baseline. Anomalies do not alter it.")
+	fmt.Println("Zero-variance baselines use configured absolute and relative tolerances.")
 	fmt.Println("Press Ctrl-C to stop Signal Grove.")
+
+	clearToEndOfScreen()
 }
 
 func runDashboard(
@@ -1320,10 +1318,8 @@ func runDashboard(
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	renderDashboard(
-		grove,
-		addr,
-	)
+	initializeScreen()
+	renderDashboard(grove, addr)
 
 	for {
 		select {
@@ -1331,10 +1327,7 @@ func runDashboard(
 			return
 
 		case <-ticker.C:
-			renderDashboard(
-				grove,
-				addr,
-			)
+			renderDashboard(grove, addr)
 		}
 	}
 }
@@ -1543,6 +1536,28 @@ func printStartup(cfg Config) {
 	fmt.Println("Press Ctrl-C to stop.")
 }
 
+func printStartupError(cfg Config, err error) {
+	fmt.Fprintln(os.Stderr, "Signal Grove")
+	fmt.Fprintln(os.Stderr, "Startup failed.")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "Version: %s\n", version)
+	fmt.Fprintf(os.Stderr, "Address: %s\n", cfg.Addr)
+	fmt.Fprintf(os.Stderr, "Error:   %v\n", err)
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Signal Grove could not start its HTTP server.")
+}
+
+func printShutdown(status Status) {
+	fmt.Println("Signal Grove stopped.")
+	fmt.Printf("Total events received:    %d\n", status.TotalReceived)
+	fmt.Printf("Total anomalies detected: %d\n", status.TotalAnomalies)
+	fmt.Printf("Rejected events:          %d\n", status.RejectedEvents)
+	fmt.Printf("Events retained:          %d\n", status.Events)
+	fmt.Printf("Nodes tracked:            %d\n", status.Nodes)
+	fmt.Printf("Signals tracked:          %d\n", status.Signals)
+	fmt.Printf("Active anomalies:         %d\n", status.ActiveAnomalies)
+}
+
 func main() {
 	cfg := parseConfig()
 
@@ -1552,6 +1567,13 @@ func main() {
 			"Configuration error: %v\n",
 			err,
 		)
+		os.Exit(1)
+	}
+
+	listener, err := net.Listen("tcp", cfg.Addr)
+
+	if err != nil {
+		printStartupError(cfg, err)
 		os.Exit(1)
 	}
 
@@ -1583,7 +1605,7 @@ func main() {
 	serverErrors := make(chan error, 1)
 
 	go func() {
-		err := server.ListenAndServe()
+		err := server.Serve(listener)
 
 		if err != nil &&
 			!errors.Is(err, http.ErrServerClosed) {
@@ -1602,15 +1624,12 @@ func main() {
 		printStartup(cfg)
 	}
 
+	var serverErr error
+
 	select {
 	case <-ctx.Done():
 
-	case err := <-serverErrors:
-		fmt.Fprintf(
-			os.Stderr,
-			"Server error: %v\n",
-			err,
-		)
+	case serverErr = <-serverErrors:
 		stop()
 	}
 
@@ -1620,26 +1639,36 @@ func main() {
 	)
 	defer cancel()
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	shutdownErr := server.Shutdown(shutdownCtx)
+
+	if cfg.Dashboard {
+		fmt.Print("\033[H\033[J")
+	}
+
+	if serverErr != nil {
+		fmt.Fprintln(os.Stderr, "Signal Grove")
+		fmt.Fprintln(os.Stderr, "Server stopped unexpectedly.")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", serverErr)
+
+		if shutdownErr != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"Shutdown error: %v\n",
+				shutdownErr,
+			)
+		}
+
+		os.Exit(1)
+	}
+
+	if shutdownErr != nil {
 		fmt.Fprintf(
 			os.Stderr,
 			"Shutdown error: %v\n",
-			err,
+			shutdownErr,
 		)
 	}
 
-	if cfg.Dashboard {
-		clearScreen()
-	}
-
-	status := grove.Status()
-
-	fmt.Println("Signal Grove stopped.")
-	fmt.Printf("Total events received:    %d\n", status.TotalReceived)
-	fmt.Printf("Total anomalies detected: %d\n", status.TotalAnomalies)
-	fmt.Printf("Rejected events:          %d\n", status.RejectedEvents)
-	fmt.Printf("Events retained:          %d\n", status.Events)
-	fmt.Printf("Nodes tracked:            %d\n", status.Nodes)
-	fmt.Printf("Signals tracked:          %d\n", status.Signals)
-	fmt.Printf("Active anomalies:         %d\n", status.ActiveAnomalies)
+	printShutdown(grove.Status())
 }
